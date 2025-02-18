@@ -1,0 +1,28 @@
+---
+
+nvm_version: "v0.39.5"
+node_version: "16.18.0"
+java_version: "openjdk-8-jdk"
+
+mysql_root_password: "112233"
+mysql_port: 3306
+mysql_config_dir: "{{ ansible_env.PWD }}"
+mysql_config_path: "{{ mysql_config_dir }}/mysql.cnf"
+mysql_version: "5.7"
+mysql_database: "ry"
+mysql_charset: "utf8mb4"
+mysql_collation: "utf8mb4_general_ci"
+mysql_data_path: "/java/data/mysql"
+
+redis_password: "112233"
+redis_port: 6379
+
+app_dir: "/java/RuoYi-Vue"
+git_repo: "https://gitee.com/y_project/RuoYi-Vue.git"
+app_version: "master"
+
+
+sql_base_path: "/java/RuoYi-Vue/sql"
+
+ruoyi_upload_path: "/java/RuoYi-Vue/uploadPath"
+

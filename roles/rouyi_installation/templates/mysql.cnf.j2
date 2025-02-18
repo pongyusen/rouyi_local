@@ -1,0 +1,27 @@
+[mysqld]
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+default-storage-engine = INNODB
+max_connections = {{ mysql_max_connections | default(151) }}
+max_allowed_packet = {{ mysql_max_allowed_packet | default('64M') }}
+key_buffer_size = {{ mysql_key_buffer_size | default('16M') }}
+init-connect = SET NAMES utf8mb4
+skip-character-set-client-handshake = true
+
+# InnoDB settings
+innodb_buffer_pool_size = {{ mysql_innodb_buffer_pool_size | default('1G') }}
+innodb_log_file_size = {{ mysql_innodb_log_file_size | default('256M') }}
+innodb_log_buffer_size = {{ mysql_innodb_log_buffer_size | default('16M') }}
+innodb_flush_log_at_trx_commit = {{ mysql_innodb_flush_log_at_trx_commit | default(1) }}
+innodb_flush_method = {{ mysql_innodb_flush_method | default('O_DIRECT') }}
+
+# Logging
+slow_query_log = {{ mysql_slow_query_log | default(1) }}
+slow_query_log_file = /var/log/mysql/mysql-slow.log
+long_query_time = {{ mysql_long_query_time | default(2) }}
+
+[client]
+default-character-set = utf8mb4
+
+[mysql]
+default-character-set = utf8mb4

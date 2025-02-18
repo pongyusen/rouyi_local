@@ -1,0 +1,5 @@
+- hosts: rouyi
+  remote_user: pong
+  become: true
+  roles:
+    - rouyi_installation

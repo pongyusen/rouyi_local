@@ -1,0 +1,226 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Upgrade all packages
+  apt:
+    upgrade: dist
+    state: latest
+
+- name: Install Docker
+  apt:
+    name: docker.io
+    state: present
+
+- name: Start and enable Docker service
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Install Java
+  apt:
+    name: "{{ java_version }}"
+    state: present
+
+- name: Install Maven
+  apt:
+    name: maven
+    state: present
+
+- name: Install Git
+  apt:
+    name: git
+    state: present
+
+- name: Install curl
+  apt:
+    name: curl
+    state: present
+
+- name: Install NVM
+  shell: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
+  args:
+    creates: "{{ ansible_env.HOME }}/.nvm/nvm.sh"
+  become: yes
+
+- name: reset ssh connection to allow user changes to affect 'current login user'
+  meta: reset_connection
+
+- name: Install Node.js
+  shell: |
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    nvm install {{ node_version }}
+  args:
+    executable: /bin/bash
+    creates: "{{ ansible_env.HOME }}/.nvm/versions/node/v{{ node_version }}"
+  become: yes
+
+- name: Create MySQL configuration from template
+  template:
+    src: mysql.cnf.j2
+    dest: "{{ mysql_config_path }}"
+    mode: '0644'
+
+
+- name: Install Python pip
+  apt:
+    name: python3-pip
+    state: present
+
+- name: Install Docker Python SDK
+  pip:
+    name: docker
+    state: present
+
+- name: Create MySQL data directory
+  file:
+    path: "{{ mysql_data_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Create MySQL container
+  community.docker.docker_container:
+    name: my-mysql
+    image: "mysql:{{ mysql_version }}"
+    state: started
+    restart_policy: unless-stopped
+    env:
+      MYSQL_ROOT_PASSWORD: "{{ mysql_root_password }}"
+    ports:
+      - "{{ mysql_port }}:3306"
+    volumes:
+      - "{{ mysql_config_path }}:/etc/mysql/conf.d/mysql.cnf:ro"
+      - "{{ mysql_data_path }}:/var/lib/mysql"
+
+
+- name: Create Redis container
+  community.docker.docker_container:
+    name: my-redis
+    image: redis
+    state: started
+    restart_policy: unless-stopped
+    ports:
+      - "{{ redis_port }}:6379"
+    command: "redis-server --requirepass {{ redis_password }}"
+
+- name: Wait for MySQL to be ready
+  community.docker.docker_container_info:
+    name: my-mysql
+  register: mysql_container
+  until: mysql_container.exists and mysql_container.container.State.Running
+  retries: 30
+  delay: 2
+
+- name: Check if database exists
+  shell: >
+    docker exec my-mysql mysql -uroot -p{{ mysql_root_password }}
+    -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '{{ mysql_database }}';" | grep -q "{{ mysql_database }}"
+  register: db_exists
+  changed_when: false
+  failed_when: false
+
+- name: Create database
+  command: >
+    docker exec my-mysql mysql -uroot -p{{ mysql_root_password }}
+    -e "CREATE DATABASE IF NOT EXISTS {{ mysql_database }}
+    CHARACTER SET {{ mysql_charset }}
+    COLLATE {{ mysql_collation }};"
+  register: command_result
+  changed_when: "'database exists' not in command_result.stderr"
+  failed_when: 
+    - command_result.rc != 0
+    - "'database exists' not in command_result.stderr"
+  when: db_exists.rc != 0
+
+- name: Create app directory
+  file:
+    path: "{{ app_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Check if repository exists
+  stat:
+    path: "{{ app_dir }}/.git"
+  register: git_repo_stat
+
+- name: Clone application repository
+  git:
+    repo: "{{ git_repo }}"
+    dest: "{{ app_dir }}"
+    version: "{{ app_version }}"
+  when: not git_repo_stat.stat.exists
+
+
+- name: Find Ruoyi SQL file
+  find:
+    paths: "{{ sql_base_path }}"
+    patterns: "ry_*.sql"
+    excludes: "quartz.sql"
+  register: found_sql_files
+  when: db_exists.rc != 0
+
+- name: Set SQL version from sql file
+  set_fact:
+    sql_file: "{{ found_sql_files.files | sort(attribute='path') | last }}"
+  when: db_exists.rc != 0
+
+# - name: Debug SQL files
+#   debug:
+#     var: sql_file.path
+#   when: db_exists.rc != 0
+
+- name: Create database if not exists
+  shell: >
+    docker exec my-mysql mysql -uroot -p{{ mysql_root_password }}
+    -e "CREATE DATABASE IF NOT EXISTS {{ mysql_database }}
+    CHARACTER SET {{ mysql_charset }}
+    COLLATE {{ mysql_collation }};"
+  when: db_exists.rc != 0
+
+- name: Import main database schema
+  shell: "cat {{ sql_file.path }} | docker exec -i my-mysql mysql -uroot -p{{ mysql_root_password }} -D {{ mysql_database }}"
+  args:
+    executable: /bin/bash
+  when: db_exists.rc != 0
+
+- name: Import quartz schema
+  shell: "cat {{ sql_base_path }}/quartz.sql | docker exec -i my-mysql mysql -uroot -p{{ mysql_root_password }} -D {{ mysql_database }}"
+  args:
+    executable: /bin/bash
+  when: db_exists.rc != 0
+
+- name: create uploadPath directory
+  file:
+    path: "{{ ruoyi_upload_path }}"
+    state: directory
+    mode: '0755'
+
+- name: create application-druid.yml file
+  template:
+    src: application-druid.yml.j2
+    dest: "{{ app_dir }}/ruoyi-admin/src/main/resources/application-druid.yml"
+    mode: '0644'
+
+- name: create application.yml file
+  template:
+    src: application.yml.j2
+    dest: "{{ app_dir }}/ruoyi-admin/src/main/resources/application.yml"
+    mode: '0644'
+
+- name: Build and package Maven project
+  shell: mvn clean package -T 1C -DskipTests -Dmaven.javadoc.skip=true
+  args:
+    chdir: "{{ app_dir }}"
+  environment:
+    MAVEN_OPTS: "-Xmx1024m -XX:MaxPermSize=256m"
+
+- name: Create start.sh file  
+  template:
+    src: start.sh.j2
+    dest: "{{ app_dir }}/start.sh"
+    mode: '0755'
+

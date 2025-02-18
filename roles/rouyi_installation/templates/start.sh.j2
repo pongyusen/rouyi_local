@@ -1,0 +1,15 @@
+#!/bin/bash
+set -x
+
+# 启动docker容器
+docker start $(docker ps -a -q)
+
+sleep 10s
+
+# 启动后端服务
+nohup java -jar {{ app_dir }}/ruoyi-admin/target/ruoyi-admin.jar &
+
+# 启动前端服务
+cd {{ app_dir }}/ruoyi-ui
+npm install && npm run dev
+
