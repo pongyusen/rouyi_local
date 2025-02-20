@@ -1,0 +1,215 @@
+- hosts: rouyi
+  remote_user: pong
+  become: true
+  vars:
+    mysql_root_password: "112233"
+    mysql_database: "ry"
+    redis_password: "112233"
+    ruoyi_upload_path: "/java/RuoYi-Vue/uploadPath"
+  tasks:
+    - name: Check if apt package openjdk-8-jdk is available
+      command: apt-cache show openjdk-8-jdk
+      register: pkg_check_jdk
+      ignore_errors: true
+      changed_when: false
+
+    - name: Assert Java package is available
+      assert:
+        that:
+          - pkg_check_jdk.rc == 0
+        fail_msg: "OpenJDK 8 package is not available in the system repositories. Please check your sources.list"
+        success_msg: "OpenJDK 8 package is available in the repositories"
+
+   
+    - name: Check if maven is installed
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        which mvn
+      args:
+        executable: /bin/bash
+      register: maven_exists
+      ignore_errors: true
+      changed_when: false
+      become: true
+      
+    - name: Assert maven is installed
+      assert:
+        that:
+          - maven_exists.rc == 0
+        fail_msg: "Maven is not installed. Please install Maven first"
+        success_msg: "Maven is installed"
+      
+    - name: Check NPM version
+      shell: |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        npm -v
+      args:
+        executable: /bin/bash
+      become: true
+      register: npm_version
+      
+    - name: Assert NPM version is 8.19.2
+      assert:
+        that:
+          - npm_version.stdout is version('8.19.2', '==')
+        fail_msg: "NPM version must be 8.19.2. Current version is {{ npm_version.stdout }}"
+        success_msg: "NPM version 8.19.2 is installed"
+
+    - name: Check if apt package docker.io is available
+      command: apt-cache show docker.io
+      register: pkg_check_docker
+      ignore_errors: true
+      changed_when: false
+
+    - name: Assert docker.io package is available
+      assert:
+        that:
+          - pkg_check_docker.rc == 0
+        fail_msg: "docker.io package is not available in the system repositories. Please check your sources.list"
+        success_msg: "docker.io package is available in the repositories"
+
+    - name: Check if mysql docker is running
+      command: docker ps -f name=my-mysql
+      register: mysql_docker_running
+      ignore_errors: true
+      changed_when: false
+
+    - name: Assert mysql docker is running
+      assert:
+        that:
+          - mysql_docker_running.rc == 0
+        fail_msg: "mysql docker is not running"
+        success_msg: "mysql docker is running"
+
+    - name: Check if redis docker is running
+      command: docker ps -f name=my-redis
+      register: redis_docker_running
+      ignore_errors: true
+      changed_when: false
+
+    - name: Assert redis docker is running
+      assert:
+        that:
+          - redis_docker_running.rc == 0
+        fail_msg: "redis docker is not running"
+        success_msg: "redis docker is running"
+
+    - name: Check MySQL character set configuration
+      shell: >
+        docker exec my-mysql bash -c "cat /etc/mysql/conf.d/mysql.cnf | grep 'character-set-server = utf8mb4'"
+      args:
+        warn: false
+      register: charset_check
+      ignore_errors: true
+
+    - name: Assert MySQL character set is properly configured
+      assert:
+        that:
+          - charset_check.rc == 0
+        fail_msg: "MySQL configuration is missing utf8mb4 character set setting"
+        success_msg: "MySQL is properly configured with utf8mb4 character set"
+
+
+    - name: Check if database exists
+      shell: >
+        docker exec my-mysql mysql -uroot -p{{ mysql_root_password }}
+        -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '{{ mysql_database }}';" 2>/dev/null | grep -q "{{ mysql_database }}"
+      args:
+        warn: false
+      register: db_exists
+      changed_when: false
+      failed_when: false 
+
+    - name: Assert mysql database exists
+      assert:
+        that:
+          - db_exists.rc == 0
+        fail_msg: "mysql database does not exist"
+        success_msg: "mysql database exists"
+
+    - name: Check if database has tables
+      shell: >
+        docker exec my-mysql mysql -uroot -p{{ mysql_root_password }}
+        -e "SELECT COUNT(DISTINCT table_name) as count FROM information_schema.tables WHERE table_schema = '{{ mysql_database }}';" 2>/dev/null | grep -v "count"
+      args:
+        warn: false
+      register: table_count
+
+    # - name: Debug table count
+    #   debug:
+    #     var: table_count.stdout
+
+    - name: Assert database is not empty
+      assert:
+        that:
+          - (table_count.stdout | trim | int) > 0
+        fail_msg: "Database '{{ mysql_database }}' is empty. Table count: {{ table_count.stdout | trim }}"
+        success_msg: "Database '{{ mysql_database }}' contains {{ table_count.stdout | trim }} tables"
+
+    - name: Check if redis connection is successful
+      shell: >
+        docker exec my-redis redis-cli -h localhost -p 6379 -a {{ redis_password }} ping | grep -q "PONG"
+      register: redis_ping
+      ignore_errors: true
+      changed_when: false 
+
+    - name: Assert redis connection is successful
+      assert:
+        that:
+          - redis_ping.rc == 0
+        fail_msg: "Redis database does not exist"
+        success_msg: "Redis database exists"  
+
+    - name: Get the whole content of application-druid.yml
+      shell: >
+        cat /java/RuoYi-Vue/ruoyi-admin/src/main/resources/application-druid.yml
+      args:
+        warn: false
+      register: app_druid_config
+      ignore_errors: true
+
+    - name: Assert JDBC URL configuration
+      assert:
+        that:
+          - app_druid_config.stdout is search('jdbc:mysql://localhost:3306/{{ mysql_database }}')
+          - app_druid_config.stdout is search('useUnicode=true')
+          - app_druid_config.stdout is search('characterEncoding=utf8')
+          - app_druid_config.stdout is search('zeroDateTimeBehavior=convertToNull')
+          - app_druid_config.stdout is search('useSSL=true')
+          - app_druid_config.stdout is search('serverTimezone=GMT%2B8')
+        fail_msg: "Application configuration is missing required JDBC URL parameters"
+        success_msg: "Application configuration contains all required JDBC URL parameters"
+
+    - name: Get the whole content of application.yml
+      shell: >
+        cat /java/RuoYi-Vue/ruoyi-admin/src/main/resources/application.yml
+      register: app_config
+
+    - name: Set expected profile path
+      set_fact:
+        expected_profile: "profile: {{ ruoyi_upload_path }}"
+
+    - name: Assert configuration parameters
+      assert:
+        that:
+          - 'app_config.stdout is search(expected_profile)'
+        fail_msg: "Configuration is missing correct upload path: {{ expected_profile }}"
+        success_msg: "Configuration contains correct upload path: {{ expected_profile }}"
+
+    - name: Check start.sh is created
+      shell: >
+        ls /java/RuoYi-Vue/start.sh
+      args:
+        warn: false
+      register: start_sh_exists
+      ignore_errors: true
+
+    - name: Assert start.sh is created
+      assert:
+        that:
+          - start_sh_exists.rc == 0
+        fail_msg: "start.sh is not created"
+        success_msg: "start.sh is created"
+
